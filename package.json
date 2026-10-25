@@ -1,0 +1,115 @@
+{
+  "name": "p2ply",
+  "version": "0.1.0",
+  "description": "A browser-first, self-hostable WebRTC peer-to-peer networking library for TypeScript.",
+  "license": "MIT",
+  "author": "Zahid Hasan (https://github.com/zahidhasann88)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zahidhasann88/p2ply.git"
+  },
+  "homepage": "https://github.com/zahidhasann88/p2ply#readme",
+  "bugs": {
+    "url": "https://github.com/zahidhasann88/p2ply/issues"
+  },
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "sideEffects": false,
+  "engines": {
+    "node": ">=20.19.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "keywords": [
+    "webrtc",
+    "peer-to-peer",
+    "p2p",
+    "datachannel",
+    "typescript",
+    "networking"
+  ],
+  "packageManager": "pnpm@10.28.2",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./node": {
+      "types": "./dist/node.d.ts",
+      "import": "./dist/node.js",
+      "require": "./dist/node.cjs"
+    },
+    "./server": {
+      "types": "./dist/server/index.d.ts",
+      "import": "./dist/server/index.js",
+      "require": "./dist/server/index.cjs"
+    }
+  },
+  "bin": {
+    "p2ply-server": "./dist/server/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "SECURITY.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "pnpm": {
+    "overrides": {
+      "tsup>esbuild": "0.28.2"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsx watch src/server/cli.ts",
+    "dev:playground": "vite playground --host 0.0.0.0 --port 5173",
+    "build:playground": "vite build playground --base ./ --outDir ../playground-dist --emptyOutDir",
+    "example:node": "tsx examples/node-client/index.ts",
+    "example:custom": "tsx examples/custom-message/index.ts",
+    "example:reconnect": "tsx examples/reconnecting-peer/index.ts",
+    "example:server": "tsx examples/self-hosted-server/index.ts",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:integration": "vitest run tests/integration",
+    "test:e2e": "playwright test",
+    "pack:check": "corepack pnpm build && npm pack --dry-run"
+  },
+  "dependencies": {
+    "@noble/hashes": "^2.4.0",
+    "ws": "^8.22.0",
+    "zod": "^4.6.7"
+  },
+  "peerDependencies": {
+    "@roamhq/wrtc": "^0.10.0"
+  },
+  "peerDependenciesMeta": {
+    "@roamhq/wrtc": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@playwright/test": "^1.64.1",
+    "@roamhq/wrtc": "^0.10.0",
+    "@types/node": "^22.19.0",
+    "@types/ws": "^8.18.1",
+    "eslint": "^10.13.0",
+    "globals": "^16.5.0",
+    "prettier": "^3.9.10",
+    "tsup": "^8.5.1",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.46.2",
+    "vite": "^7.2.2",
+    "vitest": "^4.1.12"
+  }
+}

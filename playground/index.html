@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#0b1220" />
+    <title>P2Ply Playground</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark">P</span>
+        <div><strong>P2Ply</strong><small>NETWORK PLAYGROUND</small></div>
+      </div>
+      <div class="status-pill">
+        <span id="status-dot" class="dot"></span><span id="status-label">Offline</span>
+      </div>
+    </header>
+
+    <main class="layout">
+      <aside class="sidebar panel">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">CONTROL PLANE</p>
+            <h1>Connection</h1>
+          </div>
+          <span class="step">01</span>
+        </div>
+        <form id="connection-form" class="stack">
+          <label
+            >Signaling WebSocket
+            <input id="signaling-url" type="url" value="ws://localhost:8787" required />
+          </label>
+          <label
+            >Room
+            <div class="input-row">
+              <input id="room-id" type="text" value="p2ply-demo" maxlength="128" required /><button
+                id="join-button"
+                class="primary"
+                type="submit"
+              >
+                Connect
+              </button>
+            </div>
+          </label>
+        </form>
+        <div class="divider"></div>
+        <div class="section-head compact">
+          <div>
+            <p class="eyebrow">DISCOVERED IN ROOM</p>
+            <h2>Peers <span id="peer-count" class="count">0</span></h2>
+          </div>
+        </div>
+        <ul id="peer-list" class="peer-list">
+          <li class="empty">Start and join a room to discover peers.</li>
+        </ul>
+        <div class="local-id"><span>Your peer ID</span><code id="local-peer-id">—</code></div>
+      </aside>
+
+      <section class="main-column">
+        <section class="panel chat-panel">
+          <div class="section-head">
+            <div>
+              <p class="eyebrow">DATA PLANE · WEBRTC</p>
+              <h2>Message console</h2>
+            </div>
+            <button id="diagnostics-button" class="secondary" type="button">
+              Refresh diagnostics
+            </button>
+          </div>
+          <div id="message-log" class="message-log" role="log" aria-live="polite">
+            <div class="empty-state">
+              Messages sent here travel over a direct WebRTC DataChannel once a peer is connected.
+            </div>
+          </div>
+          <form id="message-form" class="composer">
+            <select id="message-target" aria-label="Message target">
+              <option value="">Select a connected peer</option>
+            </select>
+            <input
+              id="message-input"
+              type="text"
+              placeholder="Write a message…"
+              autocomplete="off"
+            />
+            <button class="primary" type="submit">Send</button>
+          </form>
+        </section>
+
+        <section class="panel transfer-panel">
+          <div class="section-head">
+            <div>
+              <p class="eyebrow">CHUNKED · SHA-256 VERIFIED</p>
+              <h2>File transfer</h2>
+            </div>
+            <span class="file-badge">DATA CHANNEL</span>
+          </div>
+          <form id="file-form" class="file-form">
+            <select id="file-target" aria-label="File recipient">
+              <option value="">Select a connected peer</option>
+            </select>
+            <label class="file-picker"
+              ><input id="file-input" type="file" /><span>Choose a file</span></label
+            >
+            <button id="file-send-button" class="primary" type="submit">Send file</button>
+          </form>
+          <div id="transfer-list" class="transfer-list">
+            <div class="empty-state">Outgoing and incoming transfer progress appears here.</div>
+          </div>
+        </section>
+
+        <section class="panel diagnostics-panel">
+          <div class="section-head">
+            <div>
+              <p class="eyebrow">LIVE MEASUREMENTS</p>
+              <h2>Diagnostics</h2>
+            </div>
+          </div>
+          <pre id="diagnostics-output" class="diagnostics-output">
+Measurements are unavailable until a peer connects.</pre>
+        </section>
+      </section>
+
+      <aside class="panel errors-panel">
+        <div class="section-head compact">
+          <div>
+            <p class="eyebrow">OBSERVABILITY</p>
+            <h2>Activity &amp; errors</h2>
+          </div>
+          <button id="clear-errors" class="icon-button" type="button" aria-label="Clear activity">
+            Clear
+          </button>
+        </div>
+        <ul id="activity-list" class="activity-list">
+          <li class="empty">P2Ply lifecycle events will appear here.</li>
+        </ul>
+        <div class="security-note">
+          <strong>Peer-to-peer, not peer-authenticated</strong>
+          <p>
+            WebRTC protects the transport with DTLS. Peer IDs are random session labels, not
+            verified identities. Only connect to peers your app authorizes.
+          </p>
+        </div>
+      </aside>
+    </main>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

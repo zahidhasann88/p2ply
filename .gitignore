@@ -1,0 +1,41 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build output
+dist/
+playground-dist/
+*.tsbuildinfo
+*.tgz
+
+# Tests
+coverage/
+playwright-report/
+test-results/
+blob-report/
+
+# Caches / local tooling
+.cache/
+.local/
+.npm/
+.eslintcache
+
+# Environment
+.env*
+!.env.example
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# AI assistant local files
+.claude/
+CLAUDE.local.md

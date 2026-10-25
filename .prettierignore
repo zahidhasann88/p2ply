@@ -1,0 +1,11 @@
+dist
+playground-dist
+node_modules
+.cache
+.local
+.npm
+.git
+pnpm-lock.yaml
+coverage
+playwright-report
+test-results
