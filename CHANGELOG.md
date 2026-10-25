@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.2.0 — 2026-10-25
+
+Added:
+
+- **Automatic peer reconnection.** When a connected peer drops (network change, signaling server restart), P2Ply rebuilds the connection with backoff for up to `peerReconnect.windowMs` (default 60 s). New options `peerReconnect.auto` (default `true`) and `peerReconnect.windowMs`; new peer state `reconnecting`.
+- **Sends wait during a reconnect.** `send()` and `request()` wait for the new connection (up to their timeout) instead of rejecting. Acknowledged messages and requests are re-sent after the reconnect and deduplicated by the receiver; repeated requests get the original response.
+- **Resumable file transfers.** Transfers pause during a drop and continue from the receiver's last chunk; the SHA-256 check still covers the whole file.
+- Peers that `leave()` or `close()` tell connected peers first (`bye`), so those do not try to reconnect.
+
+Changed:
+
+- `peerReconnect.maxAttempts` now defaults to `5` and applies to each drop.
+- `reconnectPeer()` rebuilds the connection even if it looks healthy, and keeps file transfers.
+- A DataChannel closed by the remote peer now fails the connection immediately instead of waiting for ICE to time out.
+- The DataChannel protocol gains `bye`, `file-resume`, and `file-resume-ack` messages. Peers on 0.1.x close the connection when they receive one, so upgrade both sides.
+
 ## 0.1.1 — 2026-10-25
 
 Fixed:

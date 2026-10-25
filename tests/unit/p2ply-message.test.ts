@@ -6,7 +6,10 @@ const remotePeerId = '123e4567-e89b-42d3-a456-426614174001';
 const duplicateId = '123e4567-e89b-42d3-a456-426614174002';
 
 type InternalMesh = {
-  links: Map<string, { currentState: PeerState; close: () => void }>;
+  links: Map<
+    string,
+    { currentState: PeerState; close: () => void; sendRaw?: () => Promise<number> }
+  >;
   handlePeerData(peerId: string, data: unknown): Promise<void>;
 };
 
@@ -16,7 +19,11 @@ function testMesh(
   const mesh = new P2Ply(options);
   const close = vi.fn();
   const internal = mesh as unknown as InternalMesh;
-  internal.links.set(remotePeerId, { currentState: 'connected', close });
+  internal.links.set(remotePeerId, {
+    currentState: 'connected',
+    close,
+    sendRaw: async () => Date.now(),
+  });
   return { mesh, internal, close };
 }
 

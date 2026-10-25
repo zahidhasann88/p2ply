@@ -6,7 +6,7 @@ describe('P2Ply runtime configuration', () => {
   it('fills safe defaults and accepts a WebSocket signaling URL', () => {
     const config = validateP2PlyOptions({ signalingUrl: 'ws://localhost:8787' });
     expect(config.reconnect).toMatchObject({ enabled: true, maxAttempts: 10, minDelayMs: 250 });
-    expect(config.peerReconnect.maxAttempts).toBe(3);
+    expect(config.peerReconnect).toMatchObject({ auto: true, windowMs: 60_000, maxAttempts: 5 });
     expect(config.fileChunkSize).toBe(16 * 1024);
     expect(config.maxQueuedMessages).toBeGreaterThan(0);
     expect(config.rtcConfiguration.iceServers).toBeUndefined();

@@ -37,7 +37,12 @@ export function sleep(ms: number): Promise<void> {
 export function withTimeout<T>(
   promise: Promise<T>,
   ms: number,
-  code: 'SIGNALING_TIMEOUT' | 'CONNECTION_TIMEOUT' | 'REQUEST_TIMEOUT' | 'TRANSFER_FAILED',
+  code:
+    | 'SIGNALING_TIMEOUT'
+    | 'CONNECTION_TIMEOUT'
+    | 'REQUEST_TIMEOUT'
+    | 'TRANSFER_FAILED'
+    | 'PEER_NOT_CONNECTED',
   message: string,
 ): Promise<T> {
   return new Promise<T>((resolve, reject) => {

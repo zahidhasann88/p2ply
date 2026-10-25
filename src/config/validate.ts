@@ -20,7 +20,9 @@ const reconnectSchema = z
 
 const peerReconnectSchema = z
   .object({
-    maxAttempts: z.number().int().min(1).max(20).default(3),
+    auto: z.boolean().default(true),
+    windowMs: z.number().int().min(1_000).max(3_600_000).default(60_000),
+    maxAttempts: z.number().int().min(1).max(20).default(5),
     minDelayMs: z.number().int().min(10).max(60_000).default(250),
     maxDelayMs: z.number().int().min(10).max(300_000).default(5_000),
     factor: z.number().min(1).max(10).default(2),
@@ -73,7 +75,9 @@ const optionsSchema = z
       jitter: 0.2,
     }),
     peerReconnect: peerReconnectSchema.default({
-      maxAttempts: 3,
+      auto: true,
+      windowMs: 60_000,
+      maxAttempts: 5,
       minDelayMs: 250,
       maxDelayMs: 5_000,
       factor: 2,

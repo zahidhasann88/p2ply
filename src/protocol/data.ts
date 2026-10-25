@@ -15,6 +15,7 @@ export const dataEnvelopeSchema = z.discriminatedUnion('type', [
     })
     .strict(),
   z.object({ ...base, type: z.literal('ack'), id: uuid }).strict(),
+  z.object({ ...base, type: z.literal('bye'), id: uuid }).strict(),
   z.object({ ...base, type: z.literal('request'), id: uuid, payload: z.unknown() }).strict(),
   z
     .object({ ...base, type: z.literal('response'), id: uuid, replyTo: uuid, payload: z.unknown() })
@@ -71,6 +72,15 @@ export const dataEnvelopeSchema = z.discriminatedUnion('type', [
     })
     .strict(),
   z.object({ ...base, type: z.literal('file-complete-ack'), transferId: uuid }).strict(),
+  z.object({ ...base, type: z.literal('file-resume'), transferId: uuid }).strict(),
+  z
+    .object({
+      ...base,
+      type: z.literal('file-resume-ack'),
+      transferId: uuid,
+      nextSequence: z.number().int().min(0).max(4_294_967_295),
+    })
+    .strict(),
   z
     .object({
       ...base,

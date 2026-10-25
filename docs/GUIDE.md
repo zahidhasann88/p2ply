@@ -53,16 +53,16 @@ Entry points:
 
 ### Lifecycle
 
-| Method                       | Resolves when                                                                            |
-| ---------------------------- | ---------------------------------------------------------------------------------------- |
-| `new P2Ply(options)`         | Synchronous. Throws `ConfigurationError` if options are invalid.                         |
-| `await start()`              | The server sent a valid `welcome`. Does not join any room.                               |
-| `await join(roomId)`         | The server confirmed membership. Room IDs: 1–128 chars, no edge spaces or control chars. |
-| `await leave(roomId)`        | The server confirmed you left.                                                           |
-| `await connect(peerId)`      | The DataChannel is open. Rejects on denial, negotiation failure, or timeout.             |
-| `await reconnectPeer(id)`    | A replacement connection is open. Retries up to `peerReconnect.maxAttempts` times.       |
-| `await reconnectSignaling()` | Signaling is reopened and rooms are rejoined. Peer connections are **not** rebuilt.      |
-| `await close()`              | Everything is released. Closing is final: create a new instance to start again.          |
+| Method                       | Resolves when                                                                             |
+| ---------------------------- | ----------------------------------------------------------------------------------------- |
+| `new P2Ply(options)`         | Synchronous. Throws `ConfigurationError` if options are invalid.                          |
+| `await start()`              | The server sent a valid `welcome`. Does not join any room.                                |
+| `await join(roomId)`         | The server confirmed membership. Room IDs: 1–128 chars, no edge spaces or control chars.  |
+| `await leave(roomId)`        | The server confirmed you left.                                                            |
+| `await connect(peerId)`      | The DataChannel is open. Rejects on denial, negotiation failure, or timeout.              |
+| `await reconnectPeer(id)`    | A new connection is open. Rebuilds it even if it looks healthy; transfers resume.         |
+| `await reconnectSignaling()` | Signaling is reopened and rooms are rejoined. Dropped peers then reconnect automatically. |
+| `await close()`              | Everything is released. Closing is final: create a new instance to start again.           |
 
 ### Inspection
 
@@ -70,7 +70,7 @@ Entry points:
 - `mesh.state`: `idle | starting | started | closing | closed`.
 - `mesh.signalingState`: `connecting | connected | reconnecting | disconnected | closed`.
 - `mesh.roomIds`: rooms you have joined.
-- `getPeers()` / `getPeer(id)`: discovered peers with their state (`discovered`, `connecting`, `connected`, `disconnected`, `failed`, `closed`).
+- `getPeers()` / `getPeer(id)`: discovered peers with their state (`discovered`, `connecting`, `connected`, `disconnected`, `reconnecting`, `failed`, `closed`).
 - `await getDiagnostics()`: see below.
 
 ### Messaging
@@ -187,7 +187,9 @@ All options are validated with Zod in the constructor. Unknown options are rejec
 | `reconnect.maxAttempts`                   | `10`            | Exponential backoff with jitter                                               |
 | `reconnect.minDelayMs` / `maxDelayMs`     | `250` / `30000` |                                                                               |
 | `reconnect.factor` / `jitter`             | `2` / `0.2`     | Backoff multiplier and random spread (0–1)                                    |
-| `peerReconnect.maxAttempts`               | `3`             | Used by `reconnectPeer()` only                                                |
+| `peerReconnect.auto`                      | `true`          | Reconnect dropped peers automatically (see [Reconnection](#reconnection))     |
+| `peerReconnect.windowMs`                  | `60000`         | How long to keep trying after a drop before giving up                         |
+| `peerReconnect.maxAttempts`               | `5`             | Connection attempts per drop                                                  |
 | `peerReconnect.minDelayMs` / `maxDelayMs` | `250` / `5000`  | Same backoff settings as `reconnect` (also `factor`, `jitter`)                |
 | `connectionTimeoutMs`                     | `15000`         | Max wait for the DataChannel to open                                          |
 | `negotiationTimeoutMs`                    | `15000`         | Max time for offer/answer/ICE                                                 |
@@ -217,8 +219,23 @@ All options are validated with Zod in the constructor. Unknown options are rejec
 - `send()` resolving means "handed to the local DataChannel," not "the peer received it."
 - `acknowledge: true` means "the remote P2Ply runtime parsed it." It does **not** mean your app on the other side finished processing it. For that, use `request()` and have the other side `respond()` once it is done.
 - Duplicate message IDs are suppressed within a session (a bounded in-memory cache).
-- There is **no exactly-once delivery** across reconnects, restarts, or retries, and nothing is persisted. If your app retries, give messages your own IDs and make handlers idempotent.
+- **While a peer is reconnecting**, `send()` and `request()` wait for the new connection (up to their timeout) instead of failing. Messages sent with `acknowledge: true` and requests are sent again after the reconnect, and the receiver drops the duplicates, so each one is handled once. A repeated request gets the original response.
+- A plain `send()` without `acknowledge` is at-most-once: if the connection drops right after it was handed to the DataChannel, it can be lost.
+- Nothing is persisted. Delivery across page reloads or restarts is not guaranteed; for that, store messages yourself and give them your own IDs.
 - Queues are bounded. When full, `send()` rejects with `QUEUE_OVERFLOW`; messages are never dropped silently.
+
+### Reconnection
+
+When a connected peer drops (network change, Wi-Fi blip, signaling server restart), P2Ply reconnects automatically:
+
+1. Both sides mark the peer `reconnecting` (`peer:state` event). File transfers pause; sends and requests wait.
+2. One side, chosen by peer ID so the two don't race, rebuilds the connection with exponential backoff. It also retries when the peer reappears in a room, for example after the signaling server comes back.
+3. Once connected, transfers resume from the last received chunk, and unconfirmed messages and requests are sent again.
+4. If the peer does not come back within `peerReconnect.windowMs` (60 s by default), P2Ply gives up: waiting sends reject, paused transfers fail, and an `error` event with `CONNECTION_FAILED` is emitted.
+
+A peer that calls `leave()` or `close()` tells the others first, so they do not try to reconnect. A peer that disappears without that (a crashed tab, a lost network) is waited for until `windowMs` runs out.
+
+Reconnection needs both peers on P2Ply 0.2 or later. Set `peerReconnect: { auto: false }` to turn it off; `reconnectPeer()` still works manually.
 
 ---
 
@@ -247,6 +264,7 @@ await transfer.cancel(); // or mesh.cancelTransfer(transfer.transferId)
 - The receiver must ack each chunk before the next one is sent, which bounds memory and provides backpressure.
 - The receiver checks sequence numbers and lengths against the advertised metadata.
 - Both sides compute SHA-256 incrementally. `completion` resolves only after the receiver confirms the hashes match.
+- **Transfers survive connection drops.** They pause while the peer reconnects, then continue from the last chunk the receiver has; nothing is sent twice, and the hash still covers the whole file. If the peer does not return within `peerReconnect.windowMs`, the transfer fails.
 - Multiple transfers can run in parallel without mixing, because every chunk carries its transfer ID.
 - File names from peers are sanitised (path components and control characters are removed).
 
@@ -267,7 +285,7 @@ new P2Ply({
 });
 ```
 
-Resuming an interrupted transfer is not supported yet.
+Transfers resume after a reconnect, but not after a page reload or restart: the transfer state lives in memory.
 
 ---
 
@@ -425,7 +443,7 @@ See [SECURITY.md](../SECURITY.md) for the threat model and how to report vulnera
 | `send()` → `MESSAGE_TOO_LARGE`                                        | Raise `maxMessageBytes` on **both** peers, or send large data with `sendFile()`.                                    |
 | File offer never arrives or is rejected immediately                   | The receiver has no `file:offer` listener, or the file exceeds the receiver's `maxFileBytes`.                       |
 | `NodeP2Ply.create()` → "requires @roamhq/wrtc"                        | Run `pnpm add @roamhq/wrtc`, and check that your platform has a prebuilt binary.                                    |
-| Peer shows `disconnected` / `failed` after a network blip             | Peer connections are not restored automatically. Call `mesh.reconnectPeer(peerId)`.                                 |
+| Peer stays `reconnecting`, then `CONNECTION_FAILED`                   | The peer did not come back within `peerReconnect.windowMs`, or both sides cannot reach each other (see STUN/TURN).  |
 
 For more detail, pass a `logger` and inspect `await mesh.getDiagnostics()`. `lastConnectionError` and `selectedCandidateType` are usually the most revealing fields.
 
@@ -433,9 +451,8 @@ For more detail, pass a `logger` and inspect `await mesh.getDiagnostics()`. `las
 
 ## 13. Limitations
 
-- Signaling reconnection does **not** repair broken peer connections; call `reconnectPeer()`.
-- No exactly-once delivery, persistence, or offline queueing.
-- No resumable file transfers.
+- Nothing is persisted: messages and transfers survive connection drops, but not page reloads or restarts.
+- A plain `send()` (without `acknowledge`) can be lost if the connection drops at that moment.
 - The signaling server registry is single-process (see [Scaling](#scaling)).
 - No built-in TURN, global discovery, DHT, or NAT-traversal guarantee.
 - Peer IDs are not cryptographic identities.
@@ -455,5 +472,6 @@ Both planes use protocol version `1`. Every message is validated against a stric
 
 **DataChannel (label `p2ply/1`)**
 
-- JSON envelopes `{ v: 1, type, … }`: `app`, `ack`, `request`, `response`, `response-error`, and file control messages (`file-start`, `file-ready`, `file-reject`, `file-chunk-ack`, `file-complete`, `file-complete-ack`, `file-cancel`).
+- JSON envelopes `{ v: 1, type, … }`: `app`, `ack`, `bye`, `request`, `response`, `response-error`, and file control messages (`file-start`, `file-ready`, `file-reject`, `file-chunk-ack`, `file-complete`, `file-complete-ack`, `file-resume`, `file-resume-ack`, `file-cancel`).
+- `bye` is sent before leaving on purpose. `file-resume` asks the receiver for its next expected chunk after a reconnect.
 - File chunks are binary frames: `"P2"` magic (2 bytes) · version (1) · transfer UUID (16) · big-endian sequence (4) · payload. This is framing only, not cryptography.

@@ -17,6 +17,7 @@ const FRAME_MAGIC_0 = 0x50;
 const FRAME_MAGIC_1 = 0x32;
 const FRAME_VERSION = 1;
 const FRAME_HEADER_BYTES = 23;
+const MAX_RECENTLY_COMPLETED = 64;
 
 export interface TransferManagerOptions {
   maxFileBytes: number;
@@ -52,10 +53,16 @@ interface SenderTransfer {
   file: FileInput;
   metadata: TransferMetadata;
   ready: Deferred<void>;
+  readyReceived: boolean;
   completion: Deferred<FileTransferResult>;
   currentAck?: { sequence: number; deferred: Deferred<void> };
+  nextSequence: number;
+  hasher: ReturnType<typeof sha256.create>;
   expectedHash?: string;
   cancelled: boolean;
+  paused: boolean;
+  interrupt: Deferred<never>;
+  resumed?: Deferred<void>;
 }
 
 interface ReceiverTransfer {
@@ -71,6 +78,7 @@ interface ReceiverTransfer {
   offerTimer?: ReturnType<typeof setTimeout>;
   activityTimer?: ReturnType<typeof setTimeout>;
   finished: boolean;
+  paused: boolean;
 }
 
 type ActiveTransfer = SenderTransfer | ReceiverTransfer;
@@ -95,6 +103,7 @@ class MemorySink implements FileSink {
 
 export class FileTransferManager {
   private readonly transfers = new Map<string, ActiveTransfer>();
+  private readonly recentlyCompleted = new Map<string, { peerId: string; totalChunks: number }>();
   private closed = false;
 
   constructor(private readonly options: TransferManagerOptions) {}
@@ -138,10 +147,16 @@ export class FileTransferManager {
       file,
       metadata,
       ready: deferred<void>(),
+      readyReceived: false,
       completion: deferred<FileTransferResult>(),
+      nextSequence: 0,
+      hasher: sha256.create(),
       cancelled: false,
+      paused: false,
+      interrupt: interruptSignal(),
     };
     void state.completion.promise.catch(() => {});
+    void state.ready.promise.catch(() => {});
     this.transfers.set(transferId, state);
 
     try {
@@ -171,7 +186,10 @@ export class FileTransferManager {
         return true;
       case 'file-ready': {
         const state = this.getSender(peerId, envelope.transferId);
-        state?.ready.resolve();
+        if (state) {
+          state.readyReceived = true;
+          state.ready.resolve();
+        }
         return true;
       }
       case 'file-reject': {
@@ -205,6 +223,14 @@ export class FileTransferManager {
           };
           this.finishSenderSuccess(state, result);
         }
+        return true;
+      }
+      case 'file-resume':
+        await this.receiveResume(peerId, envelope.transferId);
+        return true;
+      case 'file-resume-ack': {
+        const state = this.getSender(peerId, envelope.transferId);
+        if (state?.paused && state.resumed) await this.resumeSender(state, envelope.nextSequence);
         return true;
       }
       case 'file-cancel':
@@ -333,6 +359,51 @@ export class FileTransferManager {
     }
   }
 
+  pausePeer(peerId: string): void {
+    for (const state of this.transfers.values()) {
+      if (state.peerId !== peerId || state.paused) continue;
+      state.paused = true;
+      if (state.kind === 'send') {
+        state.resumed = deferred<void>();
+        void state.resumed.promise.catch(() => {});
+        state.interrupt.reject(new P2PlyError('PEER_NOT_CONNECTED', 'Transfer paused.'));
+      } else {
+        if (state.activityTimer) clearTimeout(state.activityTimer);
+        state.activityTimer = undefined;
+      }
+    }
+  }
+
+  async resumePeer(peerId: string): Promise<void> {
+    const states = [...this.transfers.values()].filter(
+      (state) => state.peerId === peerId && state.paused,
+    );
+    for (const state of states) {
+      try {
+        if (state.kind === 'receive') {
+          state.paused = false;
+          if (state.accepted) this.resetActivityTimer(state);
+        } else if (!state.readyReceived) {
+          await this.options.sendControl(peerId, {
+            v: 1,
+            type: 'file-start',
+            transferId: state.transferId,
+            metadata: state.metadata,
+          });
+          this.unpauseSender(state);
+        } else {
+          await this.options.sendControl(peerId, {
+            v: 1,
+            type: 'file-resume',
+            transferId: state.transferId,
+          });
+        }
+      } catch {
+        // Still unreachable: stay paused. The caller fails the transfer if the peer never returns.
+      }
+    }
+  }
+
   async close(): Promise<void> {
     this.closed = true;
     const states = [...this.transfers.values()];
@@ -363,51 +434,69 @@ export class FileTransferManager {
   }
 
   private async runSender(state: SenderTransfer): Promise<void> {
+    const { timeoutMs } = this.options;
     try {
-      await withTimeout(
-        state.ready.promise,
-        this.options.timeoutMs,
-        'TRANSFER_FAILED',
-        'The receiver did not accept the file transfer in time.',
+      while (
+        !(await this.attempt(state, () =>
+          this.step(
+            state,
+            state.ready.promise,
+            timeoutMs,
+            'The receiver did not accept the file transfer in time.',
+          ),
+        ))
       );
-      const hasher = sha256.create();
-      for (let sequence = 0; sequence < state.metadata.totalChunks; sequence += 1) {
+      while (state.nextSequence < state.metadata.totalChunks) {
         if (state.cancelled) return;
-        const start = sequence * state.metadata.chunkSize;
-        const end = Math.min(state.metadata.size, start + state.metadata.chunkSize);
-        const chunk = new Uint8Array(await state.file.slice(start, end).arrayBuffer());
-        hasher.update(chunk);
+        const sequence = state.nextSequence;
+        const chunk = await this.readChunk(state, sequence);
         const ack = deferred<void>();
+        void ack.promise.catch(() => {});
         state.currentAck = { sequence, deferred: ack };
-        const frame = encodeChunk(state.transferId, sequence, chunk);
-        await this.options.sendBinary(state.peerId, frame);
-        await withTimeout(
-          ack.promise,
-          this.options.timeoutMs,
-          'TRANSFER_FAILED',
-          `Timed out waiting for file chunk ${sequence} acknowledgement.`,
-        );
+        const delivered = await this.attempt(state, async () => {
+          await Promise.race([
+            this.options.sendBinary(state.peerId, encodeChunk(state.transferId, sequence, chunk)),
+            state.interrupt.promise,
+          ]);
+          await this.step(
+            state,
+            ack.promise,
+            timeoutMs,
+            `Timed out waiting for file chunk ${sequence} acknowledgement.`,
+          );
+        });
         state.currentAck = undefined;
+        if (!delivered) continue;
+        state.hasher.update(chunk);
+        state.nextSequence = sequence + 1;
         this.options.emitProgress({
           peerId: state.peerId,
           transferId: state.transferId,
           direction: 'send',
-          transferredBytes: end,
+          transferredBytes: Math.min(
+            state.metadata.size,
+            (sequence + 1) * state.metadata.chunkSize,
+          ),
           totalBytes: state.metadata.size,
         });
       }
-      state.expectedHash = bytesToHex(hasher.digest());
-      await this.options.sendControl(state.peerId, {
-        v: 1,
-        type: 'file-complete',
-        transferId: state.transferId,
-        sha256: state.expectedHash,
-      });
-      await withTimeout(
-        state.completion.promise,
-        this.options.timeoutMs,
-        'TRANSFER_FAILED',
-        'Timed out waiting for receiver integrity confirmation.',
+      state.expectedHash ??= bytesToHex(state.hasher.digest());
+      const expectedHash = state.expectedHash;
+      while (
+        !(await this.attempt(state, async () => {
+          await this.options.sendControl(state.peerId, {
+            v: 1,
+            type: 'file-complete',
+            transferId: state.transferId,
+            sha256: expectedHash,
+          });
+          await this.step(
+            state,
+            state.completion.promise,
+            timeoutMs,
+            'Timed out waiting for receiver integrity confirmation.',
+          );
+        }))
       );
     } catch (error) {
       if (this.transfers.get(state.transferId) !== state) return;
@@ -425,6 +514,61 @@ export class FileTransferManager {
         .catch(() => {});
       this.finishSenderFailure(state, meshError, true);
     }
+  }
+
+  private async attempt(state: SenderTransfer, run: () => Promise<unknown>): Promise<boolean> {
+    try {
+      await run();
+      return true;
+    } catch (error) {
+      if (!state.paused || !state.resumed) throw error;
+      await state.resumed.promise;
+      return false;
+    }
+  }
+
+  private step<T>(
+    state: SenderTransfer,
+    promise: Promise<T>,
+    timeoutMs: number,
+    message: string,
+  ): Promise<T> {
+    return withTimeout(
+      Promise.race([promise, state.interrupt.promise]),
+      timeoutMs,
+      'TRANSFER_FAILED',
+      message,
+    );
+  }
+
+  private async readChunk(state: SenderTransfer, sequence: number): Promise<Uint8Array> {
+    const start = sequence * state.metadata.chunkSize;
+    const end = Math.min(state.metadata.size, start + state.metadata.chunkSize);
+    return new Uint8Array(await state.file.slice(start, end).arrayBuffer());
+  }
+
+  private async resumeSender(state: SenderTransfer, receiverNext: number): Promise<void> {
+    // Only one chunk can be in flight, so the receiver is at most one chunk ahead.
+    if (receiverNext < state.nextSequence || receiverNext > state.nextSequence + 1) {
+      this.finishSenderFailure(
+        state,
+        new TransferError('TRANSFER_FAILED', 'Receiver resume position is inconsistent.'),
+      );
+      return;
+    }
+    if (receiverNext === state.nextSequence + 1) {
+      state.hasher.update(await this.readChunk(state, state.nextSequence));
+      state.nextSequence = receiverNext;
+    }
+    this.unpauseSender(state);
+  }
+
+  private unpauseSender(state: SenderTransfer): void {
+    if (this.transfers.get(state.transferId) !== state) return;
+    state.paused = false;
+    state.interrupt = interruptSignal();
+    state.resumed?.resolve();
+    state.resumed = undefined;
   }
 
   private async receiveOffer(peerId: string, envelope: FileStartEnvelope): Promise<void> {
@@ -482,6 +626,7 @@ export class FileTransferManager {
       nextSequence: 0,
       accepted: false,
       finished: false,
+      paused: false,
     };
     this.transfers.set(transferId, state);
     state.offerTimer = setTimeout(() => {
@@ -552,6 +697,10 @@ export class FileTransferManager {
     expectedHash: string,
   ): Promise<void> {
     const state = this.getReceiver(peerId, transferId);
+    if (!state && this.recentlyCompleted.get(transferId)?.peerId === peerId) {
+      await this.options.sendControl(peerId, { v: 1, type: 'file-complete-ack', transferId });
+      return;
+    }
     if (!state || !state.accepted || state.finished) return;
     if (
       state.receivedBytes !== state.metadata.size ||
@@ -595,14 +744,59 @@ export class FileTransferManager {
       state.finished = true;
       this.clearReceiverTimers(state);
       this.transfers.delete(transferId);
-      await this.options.sendControl(peerId, { v: 1, type: 'file-complete-ack', transferId });
+      this.rememberCompleted(transferId, peerId, state.metadata.totalChunks);
       this.options.emitComplete({ peerId, transferId, result });
+      // If this is lost, the sender resumes and asks again (see recentlyCompleted).
+      await this.options
+        .sendControl(peerId, { v: 1, type: 'file-complete-ack', transferId })
+        .catch(() => {});
     } catch (error) {
       await this.failReceiver(
         state,
         asP2PlyError(error, 'TRANSFER_FAILED', 'Could not finalize the received file.'),
         true,
       );
+    }
+  }
+
+  private async receiveResume(peerId: string, transferId: string): Promise<void> {
+    const state = this.getReceiver(peerId, transferId);
+    const completed = this.recentlyCompleted.get(transferId);
+    if (!state && completed?.peerId === peerId) {
+      await this.options.sendControl(peerId, {
+        v: 1,
+        type: 'file-resume-ack',
+        transferId,
+        nextSequence: completed.totalChunks,
+      });
+      return;
+    }
+    if (!state || !state.accepted || state.finished) {
+      await this.options
+        .sendControl(peerId, {
+          v: 1,
+          type: 'file-cancel',
+          transferId,
+          reason: 'Unknown or inactive transfer.',
+        })
+        .catch(() => {});
+      return;
+    }
+    state.paused = false;
+    this.resetActivityTimer(state);
+    await this.options.sendControl(peerId, {
+      v: 1,
+      type: 'file-resume-ack',
+      transferId,
+      nextSequence: state.nextSequence,
+    });
+  }
+
+  private rememberCompleted(transferId: string, peerId: string, totalChunks: number): void {
+    this.recentlyCompleted.set(transferId, { peerId, totalChunks });
+    if (this.recentlyCompleted.size > MAX_RECENTLY_COMPLETED) {
+      const oldest = this.recentlyCompleted.keys().next().value as string | undefined;
+      if (oldest) this.recentlyCompleted.delete(oldest);
     }
   }
 
@@ -657,6 +851,8 @@ export class FileTransferManager {
     state.cancelled = true;
     state.ready.reject(error);
     state.currentAck?.deferred.reject(error);
+    state.interrupt.reject(error);
+    state.resumed?.reject(error);
     state.completion.reject(error);
     if (emit) this.options.emitError({ peerId: state.peerId, transferId: state.transferId, error });
   }
@@ -701,6 +897,12 @@ export class FileTransferManager {
   private assertOpen(): void {
     if (this.closed) throw new P2PlyError('CLOSED', 'File transfer manager has been closed.');
   }
+}
+
+function interruptSignal(): Deferred<never> {
+  const signal = deferred<never>();
+  void signal.promise.catch(() => {});
+  return signal;
 }
 
 export function encodeChunk(transferId: string, sequence: number, payload: Uint8Array): Uint8Array {

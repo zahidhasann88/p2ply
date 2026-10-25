@@ -1,4 +1,4 @@
-import { P2PlyError, asP2PlyError } from './errors.js';
+import { P2PlyError, QueueOverflowError, asP2PlyError } from './errors.js';
 import { TypedEmitter } from './events/emitter.js';
 import type { EventListener } from './events/emitter.js';
 import { validateP2PlyOptions, type ValidatedP2PlyOptions } from './config/validate.js';
@@ -34,12 +34,24 @@ interface PendingAck {
   peerId: string;
   deferred: Deferred<number>;
   timer: ReturnType<typeof setTimeout>;
+  encoded: string;
+  transmitted: boolean;
 }
 
 interface PendingRequest {
   peerId: string;
   deferred: Deferred<unknown>;
   timer: ReturnType<typeof setTimeout>;
+  encoded: string;
+  transmitted: boolean;
+}
+
+interface PeerOutage {
+  ready: Deferred<void>;
+  timer: ReturnType<typeof setTimeout>;
+  attempts: number;
+  waiters: number;
+  repairing: boolean;
 }
 
 interface CandidateBuffer {
@@ -50,6 +62,8 @@ interface CandidateBuffer {
 }
 
 const MAX_SEEN_MESSAGES = 4_096;
+const MAX_CACHED_RESPONSES = 256;
+const MAX_RECONNECT_TARGETS = 1_024;
 const MAX_PENDING_CANDIDATE_SESSIONS = 64;
 const MAX_PENDING_CANDIDATES_PER_SESSION = 256;
 
@@ -68,6 +82,9 @@ export class P2Ply<TMessage = unknown, TResponse = unknown> {
   private readonly seenMessages = new Map<string, true>();
   private readonly candidateBuffers = new Map<string, CandidateBuffer>();
   private readonly peerReconnectAttempts = new Map<string, number>();
+  private readonly reconnectTargets = new Set<string>();
+  private readonly outages = new Map<string, PeerOutage>();
+  private readonly responseCache = new Map<string, DataEnvelope>();
   private signaling?: SignalingClient;
   private transferManager: FileTransferManager;
   private lifecycle: MeshState = 'idle';
@@ -197,6 +214,13 @@ export class P2Ply<TMessage = unknown, TResponse = unknown> {
     const pending = deferred<void>();
     this.pendingLeaves.set(roomId, pending);
     try {
+      // Tell peers we only share this room with that we are leaving on purpose.
+      const departing = [...this.peerRooms]
+        .filter(([, rooms]) =>
+          [...rooms].every((room) => room === roomId || !this.joinedRooms.has(room)),
+        )
+        .map(([peerId]) => peerId);
+      await this.sayGoodbye(departing);
       this.sendSignaling({ v: SIGNALING_PROTOCOL_VERSION, type: 'leave', roomId });
       await withTimeout(
         pending.promise,
@@ -214,7 +238,7 @@ export class P2Ply<TMessage = unknown, TResponse = unknown> {
       const link = this.links.get(peerId);
       return {
         peerId,
-        state: link?.currentState ?? 'discovered',
+        state: this.peerStateOf(peerId, link) ?? 'discovered',
         roomIds: [...roomSet],
         ...(link
           ? {
@@ -234,6 +258,10 @@ export class P2Ply<TMessage = unknown, TResponse = unknown> {
   }
 
   async connect(peerId: string): Promise<void> {
+    return this.openLink(peerId, true);
+  }
+
+  private async openLink(peerId: string, reportErrors: boolean): Promise<void> {
     this.assertStarted();
     if (peerId === this.peerId)
       throw new P2PlyError('INVALID_STATE', 'A peer cannot connect to itself.');
@@ -260,7 +288,8 @@ export class P2Ply<TMessage = unknown, TResponse = unknown> {
         return this.waitForPeerLink(peerId, currentLink);
       currentLink.close();
       if (this.links.get(peerId) === currentLink) this.links.delete(peerId);
-      await this.transferManager.cancelPeer(peerId, 'Peer connection is being replaced.');
+      if (!this.outages.has(peerId))
+        await this.transferManager.cancelPeer(peerId, 'Peer connection is being replaced.');
       this.assertStarted();
       currentLink = this.links.get(peerId);
     }
@@ -278,7 +307,7 @@ export class P2Ply<TMessage = unknown, TResponse = unknown> {
           'CONNECTION_FAILED',
           `Could not connect to peer ${peerId}.`,
         );
-        this.emitError(meshError);
+        if (reportErrors) this.emitError(meshError);
         throw meshError;
       }
     })();
@@ -304,31 +333,17 @@ export class P2Ply<TMessage = unknown, TResponse = unknown> {
 
   async reconnectPeer(peerId: string): Promise<void> {
     this.assertStarted();
-    const policy = this.config.peerReconnect;
-    let lastError: unknown;
-    for (let attempt = 1; attempt <= policy.maxAttempts; attempt += 1) {
-      this.peerReconnectAttempts.set(peerId, attempt);
-      const old = this.links.get(peerId);
-      if (old) {
-        old.close();
-        this.links.delete(peerId);
-        await this.transferManager.cancelPeer(peerId, 'Peer link is reconnecting.');
-      }
-      try {
-        await this.connect(peerId);
-        this.peerReconnectAttempts.delete(peerId);
-        return;
-      } catch (error) {
-        lastError = error;
-        if (attempt < policy.maxAttempts) await sleep(exponentialDelay(attempt, policy));
-      }
+    if (!this.getSharedRoom(peerId))
+      throw new P2PlyError('PEER_NOT_FOUND', `Peer ${peerId} is not present in a joined room.`);
+    this.rememberTarget(peerId);
+    const outage = this.beginOutage(peerId);
+    const old = this.links.get(peerId);
+    if (old && old.currentState !== 'connecting') {
+      old.close();
+      if (this.links.get(peerId) === old) this.links.delete(peerId);
     }
-    this.peerReconnectAttempts.delete(peerId);
-    throw asP2PlyError(
-      lastError,
-      'CONNECTION_FAILED',
-      `Could not reconnect to peer ${peerId} after ${policy.maxAttempts} attempts.`,
-    );
+    this.startRepair(peerId, outage);
+    await outage.ready.promise;
   }
 
   async send(peerId: string, data: TMessage, options: SendOptions = {}): Promise<SendReceipt> {
@@ -337,7 +352,7 @@ export class P2Ply<TMessage = unknown, TResponse = unknown> {
       throw new P2PlyError('SERIALIZATION_FAILED', 'Undefined is not a JSON application payload.');
     if (this.config.validateMessage && !this.config.validateMessage(data))
       throw new P2PlyError('INVALID_MESSAGE', 'Application message did not pass validateMessage.');
-    const link = this.requireConnectedLink(peerId);
+    this.assertReachable(peerId);
     const messageId = randomId();
     const envelope: DataEnvelope = {
       v: DATA_PROTOCOL_VERSION,
@@ -348,16 +363,14 @@ export class P2Ply<TMessage = unknown, TResponse = unknown> {
     };
     const encoded = encodeJson(envelope, this.config.maxMessageBytes, 'Application message');
     const acceptedAt = Date.now();
+    const timeoutMs = options.timeoutMs ?? this.config.requestTimeoutMs;
     let pendingAck: PendingAck | undefined;
     if (options.acknowledge)
-      pendingAck = this.createPendingAck(
-        peerId,
-        messageId,
-        options.timeoutMs ?? this.config.requestTimeoutMs,
-      );
+      pendingAck = this.createPendingAck(peerId, messageId, timeoutMs, encoded);
     try {
-      const transmittedAt = await link.sendRaw(encoded);
+      const transmittedAt = await this.transmit(peerId, encoded, timeoutMs);
       if (!pendingAck) return { messageId, acceptedAt, transmittedAt };
+      pendingAck.transmitted = true;
       const acknowledgedAt = await pendingAck.deferred.promise;
       return { messageId, acceptedAt, transmittedAt, acknowledgedAt };
     } catch (error) {
@@ -384,7 +397,7 @@ export class P2Ply<TMessage = unknown, TResponse = unknown> {
     this.assertStarted();
     if (data === undefined)
       throw new P2PlyError('SERIALIZATION_FAILED', 'Undefined is not a JSON request payload.');
-    const link = this.requireConnectedLink(peerId);
+    this.assertReachable(peerId);
     if (this.pendingRequests.size >= this.config.maxPendingRequests) {
       throw new P2PlyError(
         'TOO_MANY_PENDING_REQUESTS',
@@ -406,9 +419,11 @@ export class P2Ply<TMessage = unknown, TResponse = unknown> {
         new P2PlyError('REQUEST_TIMEOUT', `Request ${requestId} timed out after ${timeoutMs} ms.`),
       );
     }, timeoutMs);
-    this.pendingRequests.set(requestId, { peerId, deferred: pending, timer });
+    const entry: PendingRequest = { peerId, deferred: pending, timer, encoded, transmitted: false };
+    this.pendingRequests.set(requestId, entry);
     try {
-      await link.sendRaw(encoded);
+      await this.transmit(peerId, encoded, timeoutMs);
+      entry.transmitted = true;
     } catch (error) {
       clearTimeout(timer);
       this.pendingRequests.delete(requestId);
@@ -442,7 +457,7 @@ export class P2Ply<TMessage = unknown, TResponse = unknown> {
       const roomIds = [...(this.peerRooms.get(peerId) ?? [])];
       peers.push({
         peerId,
-        state: link.currentState,
+        state: this.peerStateOf(peerId, link) ?? link.currentState,
         roomIds,
         transport: 'webrtc-datachannel',
         ...(this.safeConnectionState(link) === undefined
@@ -478,11 +493,18 @@ export class P2Ply<TMessage = unknown, TResponse = unknown> {
   async close(): Promise<void> {
     if (this.lifecycle === 'closed' || this.lifecycle === 'closing') return;
     this.lifecycle = 'closing';
+    await this.sayGoodbye([...this.links.keys()]);
     await this.transferManager.close();
     for (const link of this.links.values()) link.close();
     this.links.clear();
     for (const buffer of this.candidateBuffers.values()) clearTimeout(buffer.timer);
     this.candidateBuffers.clear();
+    for (const outage of this.outages.values()) {
+      clearTimeout(outage.timer);
+      outage.ready.reject(new P2PlyError('CLOSED', 'P2Ply closed while a peer was reconnecting.'));
+    }
+    this.outages.clear();
+    this.reconnectTargets.clear();
     for (const pending of this.pendingAcks.values()) {
       clearTimeout(pending.timer);
       pending.deferred.reject(new P2PlyError('CLOSED', 'P2Ply closed before acknowledgement.'));
@@ -575,14 +597,15 @@ export class P2Ply<TMessage = unknown, TResponse = unknown> {
             );
           break;
         case 'joined':
-          this.applyRoomSnapshot(message.roomId, message.peers);
           this.joinedRooms.add(message.roomId);
+          this.applyRoomSnapshot(message.roomId, message.peers);
           this.pendingJoins.get(message.roomId)?.resolve();
+          for (const peerId of message.peers) this.scheduleRepair(peerId);
           break;
         case 'left':
           this.joinedRooms.delete(message.roomId);
           for (const [peerId, rooms] of [...this.peerRooms]) {
-            if (rooms.has(message.roomId)) this.removePeerRoom(peerId, message.roomId);
+            if (rooms.has(message.roomId)) this.removePeerRoom(peerId, message.roomId, true);
           }
           this.pendingLeaves.get(message.roomId)?.resolve();
           break;
@@ -653,6 +676,10 @@ export class P2Ply<TMessage = unknown, TResponse = unknown> {
     }
 
     let link = this.links.get(message.from);
+    if (link?.currentState === 'connected' && link.sessionId !== message.sessionId) {
+      if (this.canRecover(message.from)) this.beginOutage(message.from);
+      link.close();
+    }
     if (
       !link ||
       link.currentState === 'failed' ||
@@ -790,6 +817,10 @@ export class P2Ply<TMessage = unknown, TResponse = unknown> {
         }
         break;
       }
+      case 'bye':
+        this.reconnectTargets.delete(peerId);
+        await this.sendEnvelope(peerId, { v: DATA_PROTOCOL_VERSION, type: 'ack', id: envelope.id });
+        break;
       case 'response-error': {
         const pending = this.pendingRequests.get(envelope.replyTo);
         if (pending && pending.peerId === peerId) {
@@ -809,7 +840,11 @@ export class P2Ply<TMessage = unknown, TResponse = unknown> {
 
   private async handleRequest(peerId: string, requestId: string, data: unknown): Promise<void> {
     const key = `${peerId}:request:${requestId}`;
-    if (this.seenMessages.has(key)) return;
+    if (this.seenMessages.has(key)) {
+      const cached = this.responseCache.get(key);
+      if (cached) await this.sendEnvelope(peerId, cached).catch(() => {});
+      return;
+    }
     this.rememberMessage(key);
     let settled = false;
     const respond = async (payload: TResponse): Promise<void> => {
@@ -817,7 +852,7 @@ export class P2Ply<TMessage = unknown, TResponse = unknown> {
       settled = true;
       if (payload === undefined)
         throw new P2PlyError('SERIALIZATION_FAILED', 'Undefined is not a JSON response payload.');
-      await this.sendEnvelope(peerId, {
+      await this.sendResponse(peerId, key, {
         v: DATA_PROTOCOL_VERSION,
         type: 'response',
         id: randomId(),
@@ -828,7 +863,7 @@ export class P2Ply<TMessage = unknown, TResponse = unknown> {
     const reject = async (reason = 'Request rejected.'): Promise<void> => {
       if (settled) throw new P2PlyError('INVALID_STATE', 'This request has already been answered.');
       settled = true;
-      await this.sendEnvelope(peerId, {
+      await this.sendResponse(peerId, key, {
         v: DATA_PROTOCOL_VERSION,
         type: 'response-error',
         id: randomId(),
@@ -841,7 +876,12 @@ export class P2Ply<TMessage = unknown, TResponse = unknown> {
     if (listeners === 0) await reject('No request handler is registered.');
   }
 
-  private createPendingAck(peerId: string, messageId: string, timeoutMs: number): PendingAck {
+  private createPendingAck(
+    peerId: string,
+    messageId: string,
+    timeoutMs: number,
+    encoded: string,
+  ): PendingAck {
     if (this.pendingAcks.size >= this.config.maxPendingRequests) {
       throw new P2PlyError(
         'TOO_MANY_PENDING_REQUESTS',
@@ -859,7 +899,7 @@ export class P2Ply<TMessage = unknown, TResponse = unknown> {
         ),
       );
     }, timeoutMs);
-    const pending = { peerId, deferred: ack, timer };
+    const pending: PendingAck = { peerId, deferred: ack, timer, encoded, transmitted: false };
     this.pendingAcks.set(messageId, pending);
     return pending;
   }
@@ -868,6 +908,217 @@ export class P2Ply<TMessage = unknown, TResponse = unknown> {
     clearTimeout(pending.timer);
     if (this.pendingAcks.get(messageId) === pending) this.pendingAcks.delete(messageId);
     pending.deferred.reject(new P2PlyError('CONNECTION_FAILED', 'Message was not transmitted.'));
+  }
+
+  private async sendResponse(peerId: string, key: string, envelope: DataEnvelope): Promise<void> {
+    this.responseCache.set(key, envelope);
+    if (this.responseCache.size > MAX_CACHED_RESPONSES) {
+      const oldest = this.responseCache.keys().next().value as string | undefined;
+      if (oldest) this.responseCache.delete(oldest);
+    }
+    try {
+      await this.sendEnvelope(peerId, envelope);
+    } catch (error) {
+      // While the peer reconnects, it repeats the request and gets the cached answer.
+      if (!this.outages.has(peerId)) throw error;
+    }
+  }
+
+  private async transmit(peerId: string, data: string, timeoutMs: number): Promise<number> {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      const link = this.links.get(peerId);
+      if (link?.currentState === 'connected') {
+        try {
+          return await link.sendRaw(data);
+        } catch (error) {
+          if (!this.outages.has(peerId) || !isConnectionLoss(error)) throw error;
+        }
+      } else if (!this.outages.has(peerId)) {
+        throw new P2PlyError('PEER_NOT_CONNECTED', `Peer ${peerId} is not connected.`);
+      }
+      await this.waitForReconnect(peerId, deadline);
+    }
+  }
+
+  private async waitForReconnect(peerId: string, deadline: number): Promise<void> {
+    const outage = this.outages.get(peerId);
+    if (!outage) return;
+    if (outage.waiters >= this.config.maxQueuedMessages)
+      throw new QueueOverflowError(
+        `Too many messages are waiting for peer ${peerId} to reconnect.`,
+      );
+    const remaining = deadline - Date.now();
+    if (remaining <= 0)
+      throw new P2PlyError('PEER_NOT_CONNECTED', `Peer ${peerId} did not reconnect in time.`);
+    outage.waiters += 1;
+    try {
+      await withTimeout(
+        outage.ready.promise,
+        remaining,
+        'PEER_NOT_CONNECTED',
+        `Peer ${peerId} did not reconnect in time.`,
+      );
+    } finally {
+      outage.waiters -= 1;
+    }
+  }
+
+  private async sayGoodbye(peerIds: string[]): Promise<void> {
+    await Promise.all(
+      peerIds.map(async (peerId) => {
+        this.reconnectTargets.delete(peerId);
+        const link = this.links.get(peerId);
+        if (link?.currentState === 'connecting') await link.waitUntilConnected(500).catch(() => {});
+        if (link?.currentState !== 'connected') return;
+        const id = randomId();
+        const bye = encodeJson(
+          { v: DATA_PROTOCOL_VERSION, type: 'bye', id },
+          this.config.maxMessageBytes,
+          'Bye',
+        );
+        try {
+          const ack = this.createPendingAck(peerId, id, 500, bye);
+          await link.sendRaw(bye);
+          await ack.deferred.promise;
+        } catch {
+          // Best effort: the peer then treats the departure like a drop and gives up later.
+        }
+      }),
+    );
+  }
+
+  private canRecover(peerId: string): boolean {
+    return (
+      this.lifecycle === 'started' &&
+      this.config.peerReconnect.auto &&
+      this.reconnectTargets.has(peerId)
+    );
+  }
+
+  private rememberTarget(peerId: string): void {
+    this.reconnectTargets.delete(peerId);
+    this.reconnectTargets.add(peerId);
+    if (this.reconnectTargets.size > MAX_RECONNECT_TARGETS) {
+      const oldest = this.reconnectTargets.values().next().value as string | undefined;
+      if (oldest) this.reconnectTargets.delete(oldest);
+    }
+  }
+
+  private beginOutage(peerId: string): PeerOutage {
+    const existing = this.outages.get(peerId);
+    if (existing) return existing;
+    const windowMs = this.config.peerReconnect.windowMs;
+    const ready = deferred<void>();
+    void ready.promise.catch(() => {});
+    const outage: PeerOutage = {
+      ready,
+      attempts: 0,
+      waiters: 0,
+      repairing: false,
+      timer: setTimeout(
+        () =>
+          this.endOutage(
+            peerId,
+            new P2PlyError(
+              'CONNECTION_FAILED',
+              `Peer ${peerId} did not reconnect within ${windowMs} ms.`,
+            ),
+          ),
+        windowMs,
+      ),
+    };
+    this.outages.set(peerId, outage);
+    this.transferManager.pausePeer(peerId);
+    const roomId = this.links.get(peerId)?.roomId ?? this.getSharedRoom(peerId);
+    if (roomId) this.emitter.emit('peer:state', { peerId, roomId, state: 'reconnecting' });
+    return outage;
+  }
+
+  /** Ends an outage: on success, resumes transfers and resends unconfirmed messages. */
+  private endOutage(peerId: string, error?: P2PlyError): void {
+    const outage = this.outages.get(peerId);
+    if (!outage) return;
+    clearTimeout(outage.timer);
+    this.outages.delete(peerId);
+    this.peerReconnectAttempts.delete(peerId);
+    if (!error) {
+      outage.ready.resolve();
+      void this.transferManager.resumePeer(peerId);
+      this.resendPending(peerId);
+      return;
+    }
+    outage.ready.reject(error);
+    void this.transferManager.cancelPeer(peerId, error.message);
+    this.rejectPendingForPeer(peerId, error);
+    this.emitError(error);
+  }
+
+  /** Starts reconnecting if this side is responsible and the peer can be reached. */
+  private scheduleRepair(peerId: string): void {
+    const outage = this.outages.get(peerId);
+    if (!outage || outage.repairing) return;
+    // Only one side reconnects, so the two don't race: the peer with the smaller ID.
+    if (this.peerId.localeCompare(peerId) > 0) return;
+    // Otherwise try again when the peer reappears in a room (see addPeerRoom and 'joined').
+    if (!this.getSharedRoom(peerId) || this.signalingState !== 'connected') return;
+    this.startRepair(peerId, outage);
+  }
+
+  private startRepair(peerId: string, outage: PeerOutage): void {
+    if (outage.repairing) return;
+    outage.repairing = true;
+    void this.repairPeer(peerId, outage).finally(() => {
+      outage.repairing = false;
+    });
+  }
+
+  private async repairPeer(peerId: string, outage: PeerOutage): Promise<void> {
+    const policy = this.config.peerReconnect;
+    while (this.outages.get(peerId) === outage) {
+      if (outage.attempts >= policy.maxAttempts) {
+        this.endOutage(
+          peerId,
+          new P2PlyError(
+            'CONNECTION_FAILED',
+            `Could not reconnect to peer ${peerId} after ${policy.maxAttempts} attempts.`,
+          ),
+        );
+        return;
+      }
+      outage.attempts += 1;
+      this.peerReconnectAttempts.set(peerId, outage.attempts);
+      await sleep(exponentialDelay(outage.attempts, policy));
+      // The peer may have reconnected to us meanwhile, or left: then a later trigger resumes.
+      if (this.outages.get(peerId) !== outage || this.lifecycle !== 'started') return;
+      if (!this.getSharedRoom(peerId) || this.signalingState !== 'connected') return;
+      try {
+        await this.openLink(peerId, false);
+        return; // handlePeerState('connected') ends the outage.
+      } catch {
+        // Try again after the next backoff delay.
+      }
+    }
+  }
+
+  private resendPending(peerId: string): void {
+    const link = this.links.get(peerId);
+    if (link?.currentState !== 'connected') return;
+    for (const pending of [...this.pendingAcks.values(), ...this.pendingRequests.values()]) {
+      if (pending.peerId === peerId && pending.transmitted)
+        void link.sendRaw(pending.encoded).catch(() => {});
+    }
+  }
+
+  /** Throws unless the peer is connected or reconnecting. */
+  private assertReachable(peerId: string): void {
+    if (this.links.get(peerId)?.currentState === 'connected' || this.outages.has(peerId)) return;
+    throw new P2PlyError('PEER_NOT_CONNECTED', `Peer ${peerId} is not connected.`);
+  }
+
+  private peerStateOf(peerId: string, link: PeerLink | undefined): PeerState | undefined {
+    if (this.outages.has(peerId) && link?.currentState !== 'connected') return 'reconnecting';
+    return link?.currentState;
   }
 
   private async sendEnvelope(peerId: string, envelope: DataEnvelope): Promise<number> {
@@ -971,9 +1222,26 @@ export class P2Ply<TMessage = unknown, TResponse = unknown> {
     state: PeerState,
     error?: P2PlyError,
   ): void {
+    const isCurrent = !link || this.links.get(peerId) === link;
     this.emitter.emit('peer:state', { peerId, roomId, state, ...(error ? { error } : {}) });
-    if (state === 'connected') this.peerReconnectAttempts.delete(peerId);
-    if ((state === 'failed' || state === 'closed') && (!link || this.links.get(peerId) === link)) {
+    if (state === 'connected') {
+      this.peerReconnectAttempts.delete(peerId);
+      this.rememberTarget(peerId);
+      if (isCurrent) this.endOutage(peerId);
+      return;
+    }
+    if ((state === 'failed' || state === 'closed') && isCurrent) {
+      if (this.lifecycle === 'started' && (this.outages.has(peerId) || this.canRecover(peerId))) {
+        // Keep transfers and waiting sends; reconnect instead of failing them.
+        if (error)
+          this.config.logger.log('info', 'Peer connection dropped; reconnecting.', {
+            peerId,
+            code: error.code,
+          });
+        this.beginOutage(peerId);
+        this.scheduleRepair(peerId);
+        return;
+      }
       void this.transferManager.cancelPeer(peerId, error?.message ?? 'Peer connection closed.');
       this.rejectPendingForPeer(
         peerId,
@@ -1018,6 +1286,7 @@ export class P2Ply<TMessage = unknown, TResponse = unknown> {
     if (rooms.has(roomId)) return;
     rooms.add(roomId);
     this.emitter.emit('peer:join', { peerId, roomId });
+    this.scheduleRepair(peerId);
     if (this.config.autoConnect && this.lifecycle === 'started') {
       void this.connect(peerId).catch((error: unknown) =>
         this.emitError(
@@ -1027,18 +1296,30 @@ export class P2Ply<TMessage = unknown, TResponse = unknown> {
     }
   }
 
-  private removePeerRoom(peerId: string, roomId: string): void {
+  /**
+   * @param weLeft true when we left the room ourselves; then the peer is not reconnected.
+   * When the peer left, it may be a signaling drop, so its connection is reconnected if it returns.
+   */
+  private removePeerRoom(peerId: string, roomId: string, weLeft = false): void {
     const rooms = this.peerRooms.get(peerId);
     if (!rooms?.delete(roomId)) return;
     this.emitter.emit('peer:leave', { peerId, roomId });
     if (rooms.size === 0) {
       this.peerRooms.delete(peerId);
+      if (weLeft) {
+        this.reconnectTargets.delete(peerId);
+        this.endOutage(
+          peerId,
+          new P2PlyError('PEER_NOT_FOUND', `Left the room shared with ${peerId}.`),
+        );
+      }
       const link = this.links.get(peerId);
       if (link) {
         link.close();
         this.links.delete(peerId);
       }
-      void this.transferManager.cancelPeer(peerId, 'Peer left all shared rooms.');
+      if (!this.outages.has(peerId))
+        void this.transferManager.cancelPeer(peerId, 'Peer left all shared rooms.');
     }
   }
 
@@ -1172,6 +1453,15 @@ export class P2Ply<TMessage = unknown, TResponse = unknown> {
     this.emitter.emit('error', error);
     this.config.logger.log('warn', error.message, { code: error.code });
   }
+}
+
+function isConnectionLoss(error: unknown): boolean {
+  return (
+    error instanceof P2PlyError &&
+    (error.code === 'PEER_NOT_CONNECTED' ||
+      error.code === 'CONNECTION_FAILED' ||
+      error.code === 'CLOSED')
+  );
 }
 
 function assertNever(value: never): never {

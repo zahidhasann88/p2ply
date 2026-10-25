@@ -10,14 +10,14 @@ P2Ply connects browsers (and Node.js) **directly to each other**. You get typed 
        └─────────►  Signaling server (handshake only) ◄─────┘
 ```
 
-**[Live demo →](https://zahidhasann88.github.io/p2ply/)** Open it in two tabs (or on two devices), click **Connect** in both, then connect to the other peer. The free demo server sleeps when idle, so the first connection can take up to a minute.
+**[Live demo →](https://zahidhasann88.github.io/p2ply/)** Join a room, then open the invite link in another tab or on another device. You can chat, drag and drop files, and press **Rebuild connection** mid-transfer to watch it resume. The free demo server sleeps when idle, so the first connection can take up to a minute.
 
 ## Features
 
 - **Rooms and discovery:** join a room and see who else is there.
 - **Messaging:** typed JSON messages, broadcast, optional delivery acknowledgements, request/response.
 - **File transfer:** chunked, with progress, cancellation, and SHA-256 integrity checks.
-- **Reliability:** automatic signaling reconnects, bounded queues with backpressure, timeouts everywhere.
+- **Reliability:** dropped connections reconnect automatically, file transfers resume where they stopped, and messages sent during a drop are delivered after it. Bounded queues and timeouts everywhere.
 - **Diagnostics:** connection state, bytes, round-trip time, and whether traffic is direct or relayed.
 - **Self-hosted:** the signaling server is included. There is no paid service and no API key.
 - **Secure defaults:** validated protocol, rate limits, origin checks, and auth hooks.
@@ -32,7 +32,7 @@ pnpm dev               # terminal 1: starts the signaling server on ws://localho
 pnpm dev:playground    # terminal 2: opens the demo UI on http://localhost:5173
 ```
 
-Open `http://localhost:5173` in **two browser tabs**, click **Connect** in both, then connect to the other peer. You can now chat, send files, and view diagnostics.
+Open `http://localhost:5173`, join a room, and open the invite link in a **second tab**. The tabs connect automatically; you can chat, send files, and view connection details.
 
 ## Install
 
@@ -122,7 +122,7 @@ Install the optional WebRTC adapter (`pnpm add @roamhq/wrtc`), then use `await N
 | `request(peerId, data)`               | Send and wait for a reply                              |
 | `sendFile(peerId, file)`              | Send a file                                            |
 | `cancelTransfer(transferId)`          | Stop a file transfer                                   |
-| `reconnectPeer(peerId)`               | Rebuild a dropped peer connection                      |
+| `reconnectPeer(peerId)`               | Rebuild a peer connection now (also automatic)         |
 | `reconnectSignaling()`                | Reopen the server connection and rejoin rooms          |
 | `getDiagnostics()`                    | Connection stats for debugging                         |
 | `on(event, fn)`                       | Subscribe to an event; returns an unsubscribe function |
@@ -150,7 +150,7 @@ Start the server with `pnpm dev` first, then run an example:
 
 | Command                                       | Example                                                      |
 | --------------------------------------------- | ------------------------------------------------------------ |
-| `pnpm dev:playground`                         | Full demo UI: chat, files, diagnostics (`localhost:5173`)    |
+| `pnpm dev:playground`                         | Full demo UI: chat, files, reconnection (`localhost:5173`)   |
 | `pnpm example:node`                           | Node.js terminal chat (run in two terminals)                 |
 | `pnpm example:custom`                         | Typed messages with runtime validation (Node)                |
 | `pnpm example:reconnect`                      | Automatic peer reconnection (Node)                           |
@@ -162,7 +162,6 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, checks, and the source layout.
 
 ## Limitations
 
-- Dropped peer connections are not restored automatically; call `reconnectPeer()`.
 - Full mesh: best for small groups (tens of peers).
 - Tested in Chromium and Node.js; Firefox and Safari are not yet tested.
 

@@ -3,147 +3,202 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#0b1220" />
+    <meta name="color-scheme" content="light dark" />
+    <meta
+      name="description"
+      content="Peer-to-peer chat and file sharing in your browser, built with the P2Ply WebRTC library."
+    />
     <title>P2Ply Playground</title>
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%236d5efc'/%3E%3Ccircle cx='11' cy='16' r='4' fill='white'/%3E%3Ccircle cx='21' cy='16' r='4' fill='white' fill-opacity='.7'/%3E%3C/svg%3E"
+    />
     <link rel="stylesheet" href="./style.css" />
   </head>
   <body>
     <header class="topbar">
-      <div class="brand">
-        <span class="brand-mark">P</span>
-        <div><strong>P2Ply</strong><small>NETWORK PLAYGROUND</small></div>
+      <a class="brand" href="./" aria-label="P2Ply Playground home">
+        <span class="brand-mark" aria-hidden="true"><i></i><i></i></span>
+        <span class="brand-name">P2Ply <span class="brand-sub">Playground</span></span>
+      </a>
+      <div class="topbar-room" id="room-bar" hidden>
+        <span class="room-name" id="room-label"></span>
+        <button class="btn btn-ghost btn-sm" id="copy-invite" type="button">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M10 14a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1" />
+            <path d="M14 10a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1" />
+          </svg>
+          <span>Copy invite link</span>
+        </button>
       </div>
-      <div class="status-pill">
-        <span id="status-dot" class="dot"></span><span id="status-label">Offline</span>
+      <div class="topbar-actions">
+        <span class="status" id="status" data-tone="idle">
+          <span class="status-dot"></span><span id="status-label">Not connected</span>
+        </span>
+        <button
+          class="btn btn-icon"
+          id="details-button"
+          type="button"
+          aria-label="Connection details"
+          aria-controls="drawer"
+          aria-expanded="false"
+          hidden
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l3-8 4 16 3-8h4" /></svg>
+        </button>
+        <a
+          class="btn btn-icon"
+          href="https://github.com/zahidhasann88/p2ply"
+          target="_blank"
+          rel="noopener"
+          aria-label="P2Ply on GitHub"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true" class="fill">
+            <path
+              d="M12 2a10 10 0 0 0-3.2 19.5c.5.1.7-.2.7-.5v-1.7c-2.8.6-3.4-1.3-3.4-1.3-.4-1.2-1.1-1.5-1.1-1.5-.9-.6.1-.6.1-.6 1 .1 1.5 1 1.5 1 .9 1.5 2.4 1.1 3 .8.1-.6.4-1.1.6-1.3-2.2-.3-4.6-1.1-4.6-5a3.9 3.9 0 0 1 1-2.7 3.6 3.6 0 0 1 .1-2.6s.8-.3 2.7 1a9.4 9.4 0 0 1 5 0c1.9-1.3 2.7-1 2.7-1a3.6 3.6 0 0 1 .1 2.6 3.9 3.9 0 0 1 1 2.7c0 3.9-2.4 4.7-4.6 5 .4.3.7.9.7 1.8V21c0 .3.2.6.7.5A10 10 0 0 0 12 2Z"
+            />
+          </svg>
+        </a>
       </div>
     </header>
 
-    <main class="layout">
-      <aside class="sidebar panel">
-        <div class="section-head">
-          <div>
-            <p class="eyebrow">CONTROL PLANE</p>
-            <h1>Connection</h1>
-          </div>
-          <span class="step">01</span>
-        </div>
-        <form id="connection-form" class="stack">
-          <label
-            >Signaling WebSocket
-            <input id="signaling-url" type="url" value="ws://localhost:8787" required />
-          </label>
-          <label
-            >Room
-            <div class="input-row">
-              <input id="room-id" type="text" value="p2ply-demo" maxlength="128" required /><button
-                id="join-button"
-                class="primary"
-                type="submit"
+    <main>
+      <!-- Shown before joining a room. -->
+      <section class="welcome" id="welcome">
+        <div class="welcome-intro">
+          <p class="eyebrow">WebRTC · peer-to-peer · open source</p>
+          <h1>Chat and share files directly between browsers.</h1>
+          <p class="lede">
+            Your messages and files travel straight to the other browser. The server only introduces
+            you, and never sees what you send.
+          </p>
+          <ol class="steps">
+            <li>
+              <span><b>Join a room</b> with any name.</span>
+            </li>
+            <li>
+              <span><b>Open the invite link</b> in another tab or on another device.</span>
+            </li>
+            <li>
+              <span
+                ><b>Chat and send files.</b> Try “Rebuild connection” mid-transfer: it
+                resumes.</span
               >
-                Connect
-              </button>
-            </div>
-          </label>
-        </form>
-        <div class="divider"></div>
-        <div class="section-head compact">
-          <div>
-            <p class="eyebrow">DISCOVERED IN ROOM</p>
-            <h2>Peers <span id="peer-count" class="count">0</span></h2>
-          </div>
+            </li>
+          </ol>
         </div>
-        <ul id="peer-list" class="peer-list">
-          <li class="empty">Start and join a room to discover peers.</li>
-        </ul>
-        <div class="local-id"><span>Your peer ID</span><code id="local-peer-id">—</code></div>
-      </aside>
 
-      <section class="main-column">
-        <section class="panel chat-panel">
-          <div class="section-head">
-            <div>
-              <p class="eyebrow">DATA PLANE · WEBRTC</p>
-              <h2>Message console</h2>
-            </div>
-            <button id="diagnostics-button" class="secondary" type="button">
-              Refresh diagnostics
-            </button>
-          </div>
-          <div id="message-log" class="message-log" role="log" aria-live="polite">
-            <div class="empty-state">
-              Messages sent here travel over a direct WebRTC DataChannel once a peer is connected.
-            </div>
-          </div>
-          <form id="message-form" class="composer">
-            <select id="message-target" aria-label="Message target">
-              <option value="">Select a connected peer</option>
-            </select>
-            <input
-              id="message-input"
-              type="text"
-              placeholder="Write a message…"
-              autocomplete="off"
-            />
-            <button class="primary" type="submit">Send</button>
-          </form>
-        </section>
-
-        <section class="panel transfer-panel">
-          <div class="section-head">
-            <div>
-              <p class="eyebrow">CHUNKED · SHA-256 VERIFIED</p>
-              <h2>File transfer</h2>
-            </div>
-            <span class="file-badge">DATA CHANNEL</span>
-          </div>
-          <form id="file-form" class="file-form">
-            <select id="file-target" aria-label="File recipient">
-              <option value="">Select a connected peer</option>
-            </select>
-            <label class="file-picker"
-              ><input id="file-input" type="file" /><span>Choose a file</span></label
-            >
-            <button id="file-send-button" class="primary" type="submit">Send file</button>
-          </form>
-          <div id="transfer-list" class="transfer-list">
-            <div class="empty-state">Outgoing and incoming transfer progress appears here.</div>
-          </div>
-        </section>
-
-        <section class="panel diagnostics-panel">
-          <div class="section-head">
-            <div>
-              <p class="eyebrow">LIVE MEASUREMENTS</p>
-              <h2>Diagnostics</h2>
-            </div>
-          </div>
-          <pre id="diagnostics-output" class="diagnostics-output">
-Measurements are unavailable until a peer connects.</pre>
-        </section>
+        <form class="card join-card" id="join-form">
+          <h2>Join a room</h2>
+          <label class="field">
+            <span>Your name</span>
+            <input id="name-input" type="text" maxlength="32" autocomplete="nickname" required />
+          </label>
+          <label class="field">
+            <span>Room</span>
+            <input id="room-input" type="text" maxlength="128" spellcheck="false" required />
+          </label>
+          <details class="advanced">
+            <summary>Server settings</summary>
+            <label class="field">
+              <span>Signaling server</span>
+              <input id="url-input" type="text" spellcheck="false" required />
+            </label>
+            <p class="hint">
+              Run your own with <code>npx p2ply-server</code>. The demo server sleeps when idle, so
+              the first connection can take up to a minute.
+            </p>
+          </details>
+          <button class="btn btn-primary btn-block" id="join-button" type="submit">
+            Join room
+          </button>
+          <p class="form-error" id="join-error" role="alert" hidden></p>
+        </form>
       </section>
 
-      <aside class="panel errors-panel">
-        <div class="section-head compact">
-          <div>
-            <p class="eyebrow">OBSERVABILITY</p>
-            <h2>Activity &amp; errors</h2>
+      <!-- Shown inside a room. -->
+      <section class="room" id="room" hidden>
+        <aside class="peers" aria-label="People in this room">
+          <div class="peers-head">
+            <h2>In this room</h2>
+            <span class="count" id="peer-count">0</span>
           </div>
-          <button id="clear-errors" class="icon-button" type="button" aria-label="Clear activity">
-            Clear
-          </button>
-        </div>
-        <ul id="activity-list" class="activity-list">
-          <li class="empty">P2Ply lifecycle events will appear here.</li>
-        </ul>
-        <div class="security-note">
-          <strong>Peer-to-peer, not peer-authenticated</strong>
-          <p>
-            WebRTC protects the transport with DTLS. Peer IDs are random session labels, not
-            verified identities. Only connect to peers your app authorizes.
-          </p>
-        </div>
-      </aside>
+          <ul class="peer-list" id="peer-list"></ul>
+          <div class="peers-empty" id="peers-empty">
+            <p>Nobody else is here yet.</p>
+            <button class="btn btn-soft btn-sm" id="copy-invite-empty" type="button">
+              Copy invite link
+            </button>
+            <p class="hint">Open it in another tab or device.</p>
+          </div>
+          <div class="me">
+            <span class="avatar" id="my-avatar"></span>
+            <div>
+              <strong id="my-name"></strong>
+              <small>You</small>
+            </div>
+            <button class="btn btn-ghost btn-sm" id="leave-button" type="button">Leave</button>
+          </div>
+        </aside>
+
+        <section class="chat" aria-label="Conversation">
+          <div class="timeline" id="timeline" role="log" aria-live="polite"></div>
+          <div class="dropzone" id="dropzone" hidden>
+            <div>Drop to send the file</div>
+          </div>
+          <form class="composer" id="composer">
+            <label class="target">
+              <span class="sr-only">Send to</span>
+              <select id="target-select"></select>
+            </label>
+            <div class="composer-row">
+              <button
+                class="btn btn-icon"
+                id="attach-button"
+                type="button"
+                aria-label="Send a file"
+                title="Send a file"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path
+                    d="m21 11-8.5 8.5a6 6 0 0 1-8.5-8.5l9-9a4 4 0 0 1 5.7 5.7l-9 9a2 2 0 0 1-2.9-2.9L15 5.6"
+                  />
+                </svg>
+              </button>
+              <input id="file-input" type="file" hidden multiple />
+              <input
+                id="message-input"
+                type="text"
+                placeholder="Write a message…"
+                autocomplete="off"
+                maxlength="2000"
+              />
+              <button class="btn btn-primary btn-icon" type="submit" aria-label="Send message">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6" /></svg>
+              </button>
+            </div>
+          </form>
+        </section>
+
+        <aside class="drawer" id="drawer" aria-label="Connection details" hidden>
+          <div class="drawer-head">
+            <h2>Connection details</h2>
+            <button class="btn btn-icon" id="drawer-close" type="button" aria-label="Close">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" /></svg>
+            </button>
+          </div>
+          <div class="drawer-body">
+            <dl class="facts" id="self-facts"></dl>
+            <h3>Peers</h3>
+            <div id="peer-details"></div>
+            <h3>Event log</h3>
+            <ol class="log" id="log"></ol>
+          </div>
+        </aside>
+      </section>
     </main>
+
+    <div class="toasts" id="toasts" aria-live="assertive"></div>
     <script type="module" src="./main.ts"></script>
   </body>
 </html>

@@ -7,7 +7,8 @@ import type { RTCFactory } from './adapters/webrtc.js';
 import type { WebSocketFactory } from './signaling/socket.js';
 import type { P2PlyError } from './errors.js';
 
-export type PeerState = 'connecting' | 'connected' | 'disconnected' | 'failed' | 'closed';
+export type PeerState =
+  'connecting' | 'connected' | 'disconnected' | 'reconnecting' | 'failed' | 'closed';
 export type SignalingState =
   'connecting' | 'connected' | 'reconnecting' | 'disconnected' | 'closed';
 export type MeshState = 'idle' | 'starting' | 'started' | 'closing' | 'closed';
@@ -22,6 +23,8 @@ export interface ReconnectOptions {
 }
 
 export interface PeerReconnectOptions {
+  auto?: boolean;
+  windowMs?: number;
   maxAttempts?: number;
   minDelayMs?: number;
   maxDelayMs?: number;

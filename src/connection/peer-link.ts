@@ -268,6 +268,8 @@ export class PeerLink {
   sendRaw(data: string | ArrayBuffer | ArrayBufferView | Blob): Promise<number> {
     const channel = this.channel;
     if (!channel || channel.readyState !== 'open' || this.state !== 'connected') {
+      if (channel && this.state === 'connected')
+        this.fail(new P2PlyError('CONNECTION_FAILED', 'The DataChannel is closing.'));
       return Promise.reject(
         new P2PlyError('PEER_NOT_CONNECTED', `Peer ${this.peerId} is not connected.`),
       );
@@ -461,7 +463,9 @@ export class PeerLink {
       this.drainWrites();
     };
     channel.onclose = () => {
-      if (!this.closedByUs && this.state !== 'failed') this.setState('disconnected');
+      // A closed DataChannel never reopens, so fail now instead of waiting for ICE to time out.
+      if (!this.closedByUs)
+        this.fail(new P2PlyError('CONNECTION_FAILED', 'The DataChannel was closed by the peer.'));
     };
     channel.onerror = () => {
       this.lastConnectionError = 'DataChannel transport error';
