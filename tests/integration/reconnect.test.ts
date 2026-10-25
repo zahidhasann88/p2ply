@@ -13,6 +13,16 @@ type Internals = {
   signaling?: { socket?: { close(): void } };
 };
 
+type BlindInternals = {
+  links: Map<
+    string,
+    {
+      channel?: { onclose: unknown };
+      pc: { onconnectionstatechange: unknown; oniceconnectionstatechange: unknown };
+    }
+  >;
+};
+
 async function setup(overrides: Partial<P2PlyOptions> = {}) {
   server = await startSignalingServer({ host: '127.0.0.1', port: 0 });
   const address = server.httpServer.address();
@@ -35,6 +45,7 @@ async function setup(overrides: Partial<P2PlyOptions> = {}) {
   await b.join('room');
   await aSeesB;
   await a.connect(b.peerId);
+  await waitForState(b, a.peerId, 'connected');
   return { a, b };
 }
 
@@ -85,6 +96,24 @@ describe('automatic peer reconnection (real Node WebRTC)', () => {
     expect(states).toContain('reconnecting');
     expect(a.getPeer(b.peerId)?.state).toBe('connected');
     await waitForState(b, a.peerId, 'connected');
+  });
+
+  it('reconnects when only the peer with the larger ID notices the drop', async () => {
+    const { a, b } = await setup();
+    const [low, high] = a.peerId.localeCompare(b.peerId) < 0 ? [a, b] : [b, a];
+    // Make the smaller-ID side blind to the drop, as some platforms are (seen on Linux CI).
+    const blind = (low as unknown as BlindInternals).links.get(high.peerId)!;
+    blind.channel!.onclose = null;
+    blind.pc.onconnectionstatechange = null;
+    blind.pc.oniceconnectionstatechange = null;
+    const messages: unknown[] = [];
+    low.on('message', ({ data }) => messages.push(data));
+
+    dropLink(high, low.peerId);
+    await high.send(low.peerId, { after: 'one-sided drop' }, { acknowledge: true });
+
+    expect(messages).toEqual([{ after: 'one-sided drop' }]);
+    await waitForState(low, high.peerId, 'connected');
   });
 
   it('resumes a file transfer interrupted by a drop and verifies it', async () => {

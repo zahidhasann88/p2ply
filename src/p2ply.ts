@@ -64,6 +64,8 @@ interface CandidateBuffer {
 const MAX_SEEN_MESSAGES = 4_096;
 const MAX_CACHED_RESPONSES = 256;
 const MAX_RECONNECT_TARGETS = 1_024;
+/** Head start for the peer with the smaller ID, which reconnects first after a drop. */
+const RECONNECT_HEAD_START_MS = 2_000;
 const MAX_PENDING_CANDIDATE_SESSIONS = 64;
 const MAX_PENDING_CANDIDATES_PER_SESSION = 256;
 
@@ -214,7 +216,6 @@ export class P2Ply<TMessage = unknown, TResponse = unknown> {
     const pending = deferred<void>();
     this.pendingLeaves.set(roomId, pending);
     try {
-      // Tell peers we only share this room with that we are leaving on purpose.
       const departing = [...this.peerRooms]
         .filter(([, rooms]) =>
           [...rooms].every((room) => room === roomId || !this.joinedRooms.has(room)),
@@ -1058,8 +1059,6 @@ export class P2Ply<TMessage = unknown, TResponse = unknown> {
   private scheduleRepair(peerId: string): void {
     const outage = this.outages.get(peerId);
     if (!outage || outage.repairing) return;
-    // Only one side reconnects, so the two don't race: the peer with the smaller ID.
-    if (this.peerId.localeCompare(peerId) > 0) return;
     // Otherwise try again when the peer reappears in a room (see addPeerRoom and 'joined').
     if (!this.getSharedRoom(peerId) || this.signalingState !== 'connected') return;
     this.startRepair(peerId, outage);
@@ -1075,6 +1074,13 @@ export class P2Ply<TMessage = unknown, TResponse = unknown> {
 
   private async repairPeer(peerId: string, outage: PeerOutage): Promise<void> {
     const policy = this.config.peerReconnect;
+    // The peer with the smaller ID reconnects first. The other side waits a moment, then tries
+    // too, because the first side may not have noticed the drop at all. Simultaneous attempts
+    // are resolved by the offer-collision handling in PeerLink.
+    if (this.peerId.localeCompare(peerId) > 0 && outage.attempts === 0) {
+      await sleep(RECONNECT_HEAD_START_MS);
+      if (this.outages.get(peerId) !== outage || this.lifecycle !== 'started') return;
+    }
     while (this.outages.get(peerId) === outage) {
       if (outage.attempts >= policy.maxAttempts) {
         this.endOutage(

@@ -229,7 +229,7 @@ All options are validated with Zod in the constructor. Unknown options are rejec
 When a connected peer drops (network change, Wi-Fi blip, signaling server restart), P2Ply reconnects automatically:
 
 1. Both sides mark the peer `reconnecting` (`peer:state` event). File transfers pause; sends and requests wait.
-2. One side, chosen by peer ID so the two don't race, rebuilds the connection with exponential backoff. It also retries when the peer reappears in a room, for example after the signaling server comes back.
+2. The peer with the smaller ID rebuilds the connection with exponential backoff; the other side starts 2 seconds later, in case the first never noticed the drop. If both try at once, the collision is resolved automatically. Attempts also restart when the peer reappears in a room, for example after the signaling server comes back.
 3. Once connected, transfers resume from the last received chunk, and unconfirmed messages and requests are sent again.
 4. If the peer does not come back within `peerReconnect.windowMs` (60 s by default), P2Ply gives up: waiting sends reject, paused transfers fail, and an `error` event with `CONNECTION_FAILED` is emitted.
 
