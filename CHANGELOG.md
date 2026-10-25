@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.1 — 2026-10-25
+
+Fixed:
+
+- `getDiagnostics()` now reports `selectedCandidateType`, `roundTripTimeMs`, `bytesSent`, and `bytesReceived`. In 0.1.0, `RTCStatsReport` entries were read incorrectly, so these fields were missing and `selectedCandidateType` was always `'unknown'`.
+- The `RTCPeerConnectionLike.getStats()` adapter type is now `Promise<ReadonlyMap<string, unknown>>`, matching `RTCStatsReport`. Custom `rtcFactory` implementations must return a Map-like report.
+
 ## 0.1.0 — 2026-10-25
 
 Initial release:

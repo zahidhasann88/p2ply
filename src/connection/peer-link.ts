@@ -310,7 +310,7 @@ export class PeerLink {
   }> {
     try {
       const reports = Array.from(
-        await this.pc.getStats(),
+        (await this.pc.getStats()).values(),
         (value) => value as Record<string, unknown>,
       );
       let bytesSent: number | undefined;

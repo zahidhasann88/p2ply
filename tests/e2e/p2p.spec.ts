@@ -169,6 +169,13 @@ test('two isolated browser contexts connect, exchange a message, and transfer a 
       sha256: sent.sha256,
     });
     expect(received?.sample).toEqual([0, 17, (100 * 17) % 251, ((sent.size - 1) * 17) % 251]);
+
+    const peerDiagnostics = await a.page.evaluate(
+      async () => (await window.__p2ply!.getDiagnostics()).peers[0],
+    );
+    expect(peerDiagnostics).toMatchObject({ selectedCandidateType: 'host' });
+    expect(peerDiagnostics?.bytesSent).toBeGreaterThan(sent.size);
+    expect(peerDiagnostics?.roundTripTimeMs).toBeGreaterThanOrEqual(0);
   } finally {
     await Promise.all([a.context.close(), b.context.close()]);
   }

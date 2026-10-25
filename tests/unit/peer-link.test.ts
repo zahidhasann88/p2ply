@@ -69,8 +69,9 @@ class FakePeerConnection implements RTCPeerConnectionLike {
   async addIceCandidate(candidate?: RTCIceCandidateInit | null): Promise<void> {
     if (candidate) this.addedCandidates.push(candidate);
   }
-  async getStats(): Promise<Iterable<unknown>> {
-    return [];
+  stats: ReadonlyMap<string, unknown> = new Map();
+  async getStats(): Promise<ReadonlyMap<string, unknown>> {
+    return this.stats;
   }
   close(): void {
     this.connectionState = 'closed';
@@ -173,6 +174,24 @@ describe('PeerLink bounded writes and stale ICE handling', () => {
       candidate: { candidate: 'candidate:stale 1 udp 1 127.0.0.1 9 typ host', sdpMid: '0' },
     } as unknown as RTCPeerConnectionIceEvent);
     expect(signals.filter((signal) => signal.type === 'ice-candidate')).toHaveLength(0);
+    link.close();
+  });
+
+  it('reads diagnostics from a Map-shaped RTCStatsReport like browsers return', async () => {
+    const { link, pc } = createTestLink();
+    const reports = [
+      { id: 'T1', type: 'transport', selectedCandidatePairId: 'CP1' },
+      { id: 'CP1', type: 'candidate-pair', currentRoundTripTime: 0.042, localCandidateId: 'L1' },
+      { id: 'L1', type: 'local-candidate', candidateType: 'srflx' },
+      { id: 'D1', type: 'data-channel', bytesSent: 100, bytesReceived: 40 },
+    ];
+    pc.stats = new Map(reports.map((report) => [report.id, report]));
+    expect(await link.getStats()).toEqual({
+      bytesSent: 100,
+      bytesReceived: 40,
+      roundTripTimeMs: 42,
+      selectedCandidateType: 'srflx',
+    });
     link.close();
   });
 

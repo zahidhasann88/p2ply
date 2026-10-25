@@ -10,6 +10,8 @@ P2Ply connects browsers (and Node.js) **directly to each other**. You get typed 
        └─────────►  Signaling server (handshake only) ◄─────┘
 ```
 
+**[Live demo →](https://zahidhasann88.github.io/p2ply/)** Open it in two tabs (or on two devices), click **Connect** in both, then connect to the other peer. The free demo server sleeps when idle, so the first connection can take up to a minute.
+
 ## Features
 
 - **Rooms and discovery:** join a room and see who else is there.

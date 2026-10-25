@@ -1,6 +1,6 @@
 {
   "name": "p2ply",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A browser-first, self-hostable WebRTC peer-to-peer networking library for TypeScript.",
   "license": "MIT",
   "author": "Zahid Hasan (https://github.com/zahidhasann88)",

@@ -37,7 +37,7 @@ export interface RTCPeerConnectionLike {
   setLocalDescription(description?: RTCSessionDescriptionInit): Promise<void>;
   setRemoteDescription(description: RTCSessionDescriptionInit): Promise<void>;
   addIceCandidate(candidate?: RTCIceCandidateInit | null): Promise<void>;
-  getStats(): Promise<Iterable<unknown>>;
+  getStats(): Promise<ReadonlyMap<string, unknown>>; // RTCStatsReport
   close(): void;
 }
 
