@@ -77,15 +77,14 @@ let drawerTimer: ReturnType<typeof setInterval> | undefined;
 const names = new Map<string, string>();
 const greeted = new Set<string>();
 const reconnecting = new Set<string>();
+const unreachable = new Set<string>();
+const CONNECTION_ERRORS = new Set(['CONNECTION_FAILED', 'CONNECTION_TIMEOUT', 'PEER_NOT_FOUND']);
 const fileCards = new Map<string, FileCard>();
 
 ui.urlInput.value = defaultSignalingUrl;
 ui.roomInput.value = params.get('room') || randomRoom();
 ui.nameInput.value = loadName() || randomName();
 if (params.get('room')) ui.nameInput.focus();
-
-// ---------------------------------------------------------------------------
-// Joining and leaving
 
 ui.joinForm.addEventListener('submit', (event) => {
   event.preventDefault();
@@ -171,9 +170,6 @@ async function leaveRoom(): Promise<void> {
 
 window.addEventListener('beforeunload', () => void mesh?.close());
 
-// ---------------------------------------------------------------------------
-// P2Ply events
-
 function wireEvents(current: P2Ply<PlaygroundMessage>): void {
   current.on('signaling:state', ({ state }) => {
     if (current !== mesh) return;
@@ -204,6 +200,7 @@ function wireEvents(current: P2Ply<PlaygroundMessage>): void {
         if (card.peerId === peerId && card.active) card.pause();
     }
     if (state === 'connected') {
+      unreachable.delete(peerId);
       if (reconnecting.delete(peerId)) {
         addNotice(`Reconnected to ${nameOf(peerId)}.`, 'ok');
         for (const card of fileCards.values())
@@ -216,6 +213,7 @@ function wireEvents(current: P2Ply<PlaygroundMessage>): void {
       mesh?.getPeer(peerId)?.state !== 'reconnecting'
     )
       reconnecting.delete(peerId);
+    if (state === 'failed' && mesh?.getPeer(peerId)?.state === 'failed') explainUnreachable(peerId);
     renderPeers();
   });
 
@@ -256,6 +254,17 @@ function wireEvents(current: P2Ply<PlaygroundMessage>): void {
 
   current.on('error', (error) => {
     log(error.message, 'error');
+    if (CONNECTION_ERRORS.has(error.code)) {
+      for (const peerId of [...reconnecting]) {
+        if (current.getPeer(peerId)?.state === 'reconnecting') continue;
+        reconnecting.delete(peerId);
+        for (const card of fileCards.values())
+          if (card.peerId === peerId && card.active) card.fail('The connection was lost.');
+        explainUnreachable(peerId);
+      }
+      renderPeers();
+      return;
+    }
     if (error.code !== 'TRANSFER_CANCELLED') toast(error.message, 'error');
   });
 }
@@ -377,7 +386,21 @@ function renderPeers(): void {
         renderPeers();
         ui.messageInput.focus();
       });
+      item.className = 'peer-row';
       item.append(button);
+      if (peer.state === 'failed' || peer.state === 'closed' || peer.state === 'disconnected') {
+        const again = document.createElement('button');
+        again.type = 'button';
+        again.className = 'btn btn-soft btn-sm retry';
+        again.textContent = 'Retry';
+        again.title = `Try connecting to ${nameOf(peer.peerId)} again`;
+        again.addEventListener('click', () => {
+          again.disabled = true;
+          again.textContent = 'Retrying…';
+          void retry(peer.peerId);
+        });
+        item.append(again);
+      }
       return item;
     }),
   );
@@ -386,6 +409,25 @@ function renderPeers(): void {
   for (const peer of peers) options.push(new Option(`To ${nameOf(peer.peerId)} only`, peer.peerId));
   ui.targetSelect.replaceChildren(...options);
   ui.targetSelect.value = target;
+}
+
+function explainUnreachable(peerId: string): void {
+  if (unreachable.has(peerId)) return;
+  unreachable.add(peerId);
+  addNotice(
+    `Couldn't connect directly to ${nameOf(peerId)}. Your networks may block peer-to-peer connections (common on mobile data). Try both devices on the same Wi-Fi, then press Retry.`,
+    'warn',
+  );
+}
+
+async function retry(peerId: string): Promise<void> {
+  if (!mesh) return;
+  unreachable.delete(peerId);
+  try {
+    await mesh.connect(peerId);
+  } catch {
+    // Explained by the peer:state and error handlers.
+  }
 }
 
 function describeState(state: PeerSummary['state']): string {
