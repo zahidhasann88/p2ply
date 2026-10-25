@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.1 — 2026-10-25
+
+Fixed:
+
+- Automatic reconnection could stall when only one peer noticed the drop (seen on Linux): the peer with the larger ID now also reconnects, after a 2-second head start for the other side. The 0.2.0 package on npm was published without this fix.
+
 ## 0.2.0 — 2026-10-25
 
 Added:

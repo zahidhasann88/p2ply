@@ -78,5 +78,5 @@ Publishing is manual; nothing publishes automatically.
 1. Update the `version` in `package.json` and add an entry to `CHANGELOG.md`.
 2. Run every check: `pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm test:e2e`.
 3. Run `pnpm pack:check` and review the file list in the tarball.
-4. Run `npm login`, then `npm publish --access public`.
+4. Run `npm login`, then `npm publish --access public`. Publishing rebuilds `dist/` first (`prepublishOnly`), so the package always matches the source.
 5. Tag the release with the new version, for example `git tag v0.1.0 && git push --tags`.

@@ -1,6 +1,6 @@
 {
   "name": "p2ply",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "A browser-first, self-hostable WebRTC peer-to-peer networking library for TypeScript.",
   "license": "MIT",
   "author": "Zahid Hasan (https://github.com/zahidhasann88)",
@@ -81,7 +81,8 @@
     "test:watch": "vitest",
     "test:integration": "vitest run tests/integration",
     "test:e2e": "playwright test",
-    "pack:check": "corepack pnpm build && npm pack --dry-run"
+    "pack:check": "corepack pnpm build && npm pack --dry-run",
+    "prepublishOnly": "corepack pnpm build"
   },
   "dependencies": {
     "@noble/hashes": "^2.4.0",
